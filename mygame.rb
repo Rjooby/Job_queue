@@ -11,7 +11,8 @@ class Game
 	def initialize
 		game_json = RestClient.post("#{HOST}/games", {}).body
 		@game = JSON.parse(game_json)
-		@machines = [Machine.new(@game['id'])]
+		@machines = []
+		@total_jobs = 0
 	end
 
 	def next_turn
@@ -19,6 +20,7 @@ class Game
 		@current_turn = JSON.parse(turn_json)
 		@status = @current_turn['status']
 		@jobs = @current_turn['jobs']
+		@total_jobs += @current_turn['jobs'].count
 		@machines.each { |m|  m.play_turn }
 	end
 
@@ -34,40 +36,61 @@ class Game
 		@machines.sort{|x,y| x.remaining_memory <=> y.remaining_memory}
 	end
 
-	def most_free_machine
-		@machines.sort{|x,y| y.remaining_memory <=> x.remaining_memory}.first
+	def memory_available?(job)
+		@machines.sort{|x,y| y.remaining_memory <=> x.remaining_memory}.first.remaining_memory > job['memory_required']
 	end
 
 	def play
 		next_turn
+
 		while (@status != 'completed')
+			# Remove any machines that finished processing all jobs.
+			check_machines
+
+			# Sort jobs in descending order in terms of memory required
 			job_list = sort_jobs
 
 			job_list.each do |job|
-				# first checks if any machine can take job, then assigns the machine with the minimal mem requirement to the job
-				if most_free_machine.remaining_memory > job['memory_required']
+				# Creates machine if there are none.
+				if @machines.empty?
+					new_machine = Machine.new(@game['id'])
+					@machines.push(new_machine)
+				end
+
+				# First checks if any machine can take job
+				if memory_available?(job)
+					# Assigns job to the machine with smallest available memory capable of taking on job
 					sorted_machines.each do |m|
 						if m.remaining_memory > job['memory_required']
-							p "old"
 							m.assign(job)
 							break
 						end
 					end
+					# Otherwise make a new machine for assignment
 				else
 					new_machine = Machine.new(@game['id'])
-					p "new"
 					new_machine.assign(job)
 					@machines.push(new_machine)
 				end	
 			end
-			check_machines
 			output_info
 			next_turn
 		end
+		output_results
+	end
+
+	def output_results 
+		game_json = RestClient.get("#{HOST}/games/#{@game['id']}",).body
+		puts game_json
+		puts "----"
+		completed = JSON.parse(game_json)
+		puts "Game complete"
+		puts "Total delay: #{completed['delay_turns']} turns"
+		puts "Total cost: #{completed['cost']}"
 	end
 
 	def output_info
-		puts "On turn #{@current_turn['current_turn']}, got #{@current_turn['jobs'].count} jobs, having completed #{@current_turn['jobs_completed']} of #{@current_turn['jobs'].count} with #{@current_turn['jobs_running']} jobs running, #{@current_turn['jobs_queued']} jobs queued, and #{@current_turn['machines_running']} machines running"
+		puts "On turn #{@current_turn['current_turn']}, got #{@current_turn['jobs'].count} jobs, having completed #{@current_turn['jobs_completed']} of #{@total_jobs} with #{@current_turn['jobs_running']} jobs running, #{@current_turn['jobs_queued']} jobs queued, and #{@current_turn['machines_running']} machines running"
 	end
 
 	def check_machines
@@ -109,7 +132,6 @@ class Machine
 				@assigned_jobs.delete(job)
 			end
 		end
-
 	end
 
 	def machine_empty?
@@ -117,7 +139,8 @@ class Machine
 			self.terminate
 			return true
 		end
-		return false
+
+		false
 	end
 
 end
